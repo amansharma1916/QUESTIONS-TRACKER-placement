@@ -1,0 +1,61 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  --bg: #0f1113;
+  --panel: #1a1d21;
+  --panel-soft: #20252b;
+  --text: #e9ecef;
+  --muted: #a0a7b1;
+  --line: #313845;
+  --accent: #35c58a;
+  --accent-2: #5ea6ff;
+  --danger: #ff6b6b;
+  --warn: #ffca6d;
+  --radius: 14px;
+  --shadow: 0 24px 50px rgba(0, 0, 0, 0.45);
+
+  font-family: 'Space Grotesk', sans-serif;
+  color: var(--text);
+  background: radial-gradient(circle at 20% 0%, #1a2330 0%, #0f1113 52%);
+  line-height: 1.4;
+  font-weight: 500;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#root {
+  width: min(1200px, 100%);
+  margin: 0 auto;
+  padding: 14px;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+input,
+textarea,
+button {
+  font: inherit;
+}
+
+::view-transition-group(*),
+::view-transition-old(*),
+::view-transition-new(*) {
+  animation-duration: 0.25s;
+  animation-timing-function: cubic-bezier(0.19, 1, 0.22, 1);
+}
