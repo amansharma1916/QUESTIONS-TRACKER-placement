@@ -8,14 +8,20 @@ type RequestOptions = {
   token?: string | null
 }
 
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+function buildHeaders(token?: string | null) {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   }
 
-  if (options.token) {
-    headers.Authorization = `Bearer ${options.token}`
+  if (token) {
+    headers.Authorization = `Bearer ${token}`
   }
+
+  return headers
+}
+
+export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const headers = buildHeaders(options.token)
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: options.method || 'GET',
@@ -41,4 +47,28 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   }
 
   return (await response.json()) as T
+}
+
+export async function apiRequestBlob(path: string, options: RequestOptions = {}) {
+  const headers = buildHeaders(options.token)
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: options.method || 'GET',
+    headers,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  })
+
+  if (!response.ok) {
+    let message = `Request failed with status ${response.status}`
+    try {
+      const payload = (await response.json()) as { message?: string }
+      if (payload.message) {
+        message = payload.message
+      }
+    } catch {
+      // Ignore parse errors and use fallback message.
+    }
+    throw new Error(message)
+  }
+
+  return response
 }

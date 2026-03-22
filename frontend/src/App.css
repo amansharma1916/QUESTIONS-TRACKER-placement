@@ -528,17 +528,33 @@ textarea {
 }
 
 .table-toolbar {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
   gap: 12px;
   margin-bottom: 10px;
   align-items: center;
 }
 
+.table-toolbar h2 {
+  margin: 0;
+}
+
+.table-toolbar input {
+  flex: 1 1 240px;
+  min-width: 220px;
+}
+
 .toolbar-actions {
-  display: inline-flex;
+  display: flex;
+  margin-left: auto;
   gap: 8px;
   flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.toolbar-actions .btn {
+  white-space: nowrap;
 }
 
 .public-link-card {

@@ -1,4 +1,5 @@
 import express from 'express'
+import archiver from 'archiver'
 import { Parser } from 'json2csv'
 import jwt from 'jsonwebtoken'
 import { env } from '../config/env.js'
@@ -10,6 +11,42 @@ import { dayDifference, toDayString } from '../utils/date.js'
 import { compareLeaderboardRows, LEADERBOARD_RULES } from '../utils/leaderboard.js'
 
 const router = express.Router()
+
+const LANGUAGE_EXTENSION_MAP = {
+  python: 'py',
+  c: 'c',
+  cpp: 'cpp',
+  java: 'java',
+  javascript: 'js',
+}
+
+function getFileExtension(language) {
+  return LANGUAGE_EXTENSION_MAP[String(language || '').toLowerCase()] || 'txt'
+}
+
+function toSafeNameSegment(value, fallback) {
+  const normalized = String(value || '')
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+  return normalized || fallback
+}
+
+function normalizeEnrollmentNos(input) {
+  if (!Array.isArray(input)) {
+    return []
+  }
+
+  const unique = new Set()
+  for (const item of input) {
+    const enrollmentNo = String(item || '').trim().toUpperCase()
+    if (enrollmentNo) {
+      unique.add(enrollmentNo)
+    }
+  }
+
+  return [...unique]
+}
 
 function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -269,6 +306,79 @@ router.get('/export/csv', requireAuth, requireTeacher, async (req, res, next) =>
     res.setHeader('Content-Type', 'text/csv')
     res.setHeader('Content-Disposition', 'attachment; filename="dsa-tracker-students.csv"')
     return res.status(200).send(csv)
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.post('/submissions/download', requireAuth, requireTeacher, async (req, res, next) => {
+  try {
+    const includeAll = Boolean(req.body?.includeAll)
+    const requestedEnrollments = normalizeEnrollmentNos(req.body?.enrollmentNos)
+
+    let enrollmentNos = requestedEnrollments
+    if (includeAll) {
+      const allStudents = await Student.find({}).select('enrollmentNo').sort({ enrollmentNo: 1 }).lean()
+      enrollmentNos = allStudents.map((student) => student.enrollmentNo)
+    }
+
+    if (!enrollmentNos.length) {
+      return res.status(400).json({
+        message: includeAll
+          ? 'No students available for download'
+          : 'Select at least one student to download code',
+      })
+    }
+
+    const [students, submissions] = await Promise.all([
+      Student.find({ enrollmentNo: { $in: enrollmentNos } }).select('name enrollmentNo').lean(),
+      Submission.find({ enrollmentNo: { $in: enrollmentNos } })
+        .sort({ enrollmentNo: 1, submittedAt: -1 })
+        .lean(),
+    ])
+
+    const studentNameMap = new Map(
+      students.map((student) => [student.enrollmentNo, student.name])
+    )
+
+    const zipName = includeAll
+      ? 'all-students-submissions.zip'
+      : `selected-students-submissions-${new Date().toISOString().slice(0, 10)}.zip`
+
+    res.setHeader('Content-Type', 'application/zip')
+    res.setHeader('Content-Disposition', `attachment; filename="${zipName}"`)
+
+    const archive = archiver('zip', { zlib: { level: 9 } })
+    archive.on('error', (error) => {
+      next(error)
+    })
+
+    archive.pipe(res)
+
+    if (!submissions.length) {
+      archive.append('No submissions found for the selected students.', { name: 'README.txt' })
+    } else {
+      const studentFileCounters = new Map()
+
+      for (const submission of submissions) {
+        const enrollmentNo = submission.enrollmentNo
+        const displayName = studentNameMap.get(enrollmentNo) || enrollmentNo
+        const folder = `${toSafeNameSegment(enrollmentNo, 'student')}_${toSafeNameSegment(displayName, 'student')}`
+        const questionName = toSafeNameSegment(submission.questionTitle, 'submission')
+        const extension = getFileExtension(submission.language)
+        const submittedAt = new Date(submission.submittedAt || Date.now())
+          .toISOString()
+          .replace(/[:.]/g, '-')
+        const sequence = (studentFileCounters.get(enrollmentNo) || 0) + 1
+        studentFileCounters.set(enrollmentNo, sequence)
+
+        const filename = `${String(sequence).padStart(3, '0')}_${questionName}_${submittedAt}.${extension}`
+        archive.append(String(submission.code || ''), { name: `${folder}/${filename}` })
+      }
+    }
+
+    await archive.finalize()
+    return undefined
   } catch (error) {
     return next(error)
   }

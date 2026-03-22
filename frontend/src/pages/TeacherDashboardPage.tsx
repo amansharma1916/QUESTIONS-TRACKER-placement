@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { apiRequest } from '../api/client'
+import { apiRequest, apiRequestBlob } from '../api/client'
 import { useAuth } from '../auth/auth'
 import { useFeedback } from '../ui/feedback'
 
@@ -56,6 +56,8 @@ export function TeacherDashboardPage() {
   const [totalItems, setTotalItems] = useState(0)
   const [publicUrl, setPublicUrl] = useState('')
   const [publicUrlExpiresAt, setPublicUrlExpiresAt] = useState<string | null>(null)
+  const [selectedEnrollmentNos, setSelectedEnrollmentNos] = useState<string[]>([])
+  const [isDownloadingCode, setIsDownloadingCode] = useState(false)
 
   useEffect(() => {
     if (!token) {
@@ -109,6 +111,40 @@ export function TeacherDashboardPage() {
       setCurrentPage(totalPages)
     }
   }, [currentPage, totalPages])
+
+  const selectedVisibleCount = useMemo(() => {
+    const selected = new Set(selectedEnrollmentNos)
+    return students.filter((row) => selected.has(row.enrollmentNo)).length
+  }, [selectedEnrollmentNos, students])
+
+  const allVisibleSelected = students.length > 0 && selectedVisibleCount === students.length
+
+  function toggleStudentSelection(enrollmentNo: string) {
+    setSelectedEnrollmentNos((existing) => {
+      if (existing.includes(enrollmentNo)) {
+        return existing.filter((item) => item !== enrollmentNo)
+      }
+      return [...existing, enrollmentNo]
+    })
+  }
+
+  function toggleSelectAllVisible() {
+    setSelectedEnrollmentNos((existing) => {
+      const existingSet = new Set(existing)
+
+      if (allVisibleSelected) {
+        for (const student of students) {
+          existingSet.delete(student.enrollmentNo)
+        }
+      } else {
+        for (const student of students) {
+          existingSet.add(student.enrollmentNo)
+        }
+      }
+
+      return [...existingSet]
+    })
+  }
 
   async function exportCsv() {
     if (!token) {
@@ -169,6 +205,50 @@ export function TeacherDashboardPage() {
     }
   }
 
+  async function downloadCodeZip(includeAll: boolean) {
+    if (!token || isDownloadingCode) {
+      return
+    }
+
+    if (!includeAll && selectedEnrollmentNos.length === 0) {
+      showAlert('Select at least one student first', 'warning')
+      return
+    }
+
+    setIsDownloadingCode(true)
+    try {
+      const response = await withLoader(() =>
+        apiRequestBlob('/teacher/submissions/download', {
+          method: 'POST',
+          token,
+          body: includeAll
+            ? { includeAll: true }
+            : { enrollmentNos: selectedEnrollmentNos },
+        })
+      )
+
+      const blob = await response.blob()
+      const contentDisposition = response.headers.get('Content-Disposition') || ''
+      const matchedFileName = /filename="?([^";]+)"?/i.exec(contentDisposition)?.[1]
+      const filename = matchedFileName || (includeAll ? 'all-students-submissions.zip' : 'selected-students-submissions.zip')
+
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = filename
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      URL.revokeObjectURL(url)
+
+      showAlert(includeAll ? 'Downloaded code for all students' : 'Downloaded selected students code', 'success')
+    } catch (error) {
+      showAlert(error instanceof Error ? error.message : 'Failed to download code zip', 'error')
+    } finally {
+      setIsDownloadingCode(false)
+    }
+  }
+
   return (
     <main className="dashboard">
       <h1>Teacher Dashboard</h1>
@@ -215,6 +295,22 @@ export function TeacherDashboardPage() {
             placeholder="Search name or enrollment"
           />
           <div className="toolbar-actions">
+            <button
+              className="btn"
+              type="button"
+              onClick={() => downloadCodeZip(false)}
+              disabled={isDownloadingCode || selectedEnrollmentNos.length === 0}
+            >
+              Download Code ({selectedEnrollmentNos.length})
+            </button>
+            <button
+              className="btn ghost"
+              type="button"
+              onClick={() => downloadCodeZip(true)}
+              disabled={isDownloadingCode}
+            >
+              Download All Code
+            </button>
             <button className="btn" type="button" onClick={exportCsv}>Export CSV</button>
             <button className="btn ghost" type="button" onClick={createPublicLink}>Create 24h Public Link</button>
           </div>
@@ -236,6 +332,14 @@ export function TeacherDashboardPage() {
         <table>
           <thead>
             <tr>
+              <th>
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={toggleSelectAllVisible}
+                  aria-label="Select all students on this page"
+                />
+              </th>
               <th>Student</th>
               <th>Enrollment</th>
               <th>Total</th>
@@ -247,6 +351,14 @@ export function TeacherDashboardPage() {
           <tbody>
             {students.map((row) => (
               <tr key={row.enrollmentNo}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={selectedEnrollmentNos.includes(row.enrollmentNo)}
+                    onChange={() => toggleStudentSelection(row.enrollmentNo)}
+                    aria-label={`Select ${row.name}`}
+                  />
+                </td>
                 <td>{row.name}</td>
                 <td>{row.enrollmentNo}</td>
                 <td>{row.totalSolved}</td>
@@ -265,7 +377,7 @@ export function TeacherDashboardPage() {
             ))}
             {students.length === 0 ? (
               <tr>
-                <td colSpan={6}>
+                <td colSpan={7}>
                   <p className="sub">No students found.</p>
                 </td>
               </tr>
