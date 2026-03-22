@@ -22,6 +22,13 @@ type AnalyticsResponse = {
   leaderboardRules: string[]
   top5: StudentRow[]
   topicStats: Array<{ topic: string; studentCount: number; percentage: number }>
+  languageStats: Array<{ language: string; count: number; percentage: number }>
+  difficultyStats: Array<{ difficulty: string; count: number; percentage: number }>
+}
+
+type PublicLinkResponse = {
+  publicUrl: string
+  expiresAt: string | null
 }
 
 type StudentsListResponse = {
@@ -47,6 +54,8 @@ export function TeacherDashboardPage() {
   const [currentPage, setCurrentPage] = useState(1)
   const [totalPages, setTotalPages] = useState(1)
   const [totalItems, setTotalItems] = useState(0)
+  const [publicUrl, setPublicUrl] = useState('')
+  const [publicUrlExpiresAt, setPublicUrlExpiresAt] = useState<string | null>(null)
 
   useEffect(() => {
     if (!token) {
@@ -120,6 +129,46 @@ export function TeacherDashboardPage() {
     }
   }
 
+  async function createPublicLink() {
+    if (!token) {
+      return
+    }
+
+    try {
+      const response = await withLoader(() =>
+        apiRequest<PublicLinkResponse>('/teacher/public-link', {
+          method: 'POST',
+          token,
+        })
+      )
+
+      setPublicUrl(response.publicUrl)
+      setPublicUrlExpiresAt(response.expiresAt)
+
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(response.publicUrl)
+        showAlert('24-hour public link created and copied', 'success')
+      } else {
+        showAlert('24-hour public link created', 'success')
+      }
+    } catch (error) {
+      showAlert(error instanceof Error ? error.message : 'Failed to create public link', 'error')
+    }
+  }
+
+  async function copyPublicLink() {
+    if (!publicUrl) {
+      return
+    }
+
+    try {
+      await navigator.clipboard.writeText(publicUrl)
+      showAlert('Public link copied', 'success')
+    } catch {
+      showAlert('Could not copy link automatically', 'warning')
+    }
+  }
+
   return (
     <main className="dashboard">
       <h1>Teacher Dashboard</h1>
@@ -165,8 +214,24 @@ export function TeacherDashboardPage() {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search name or enrollment"
           />
-          <button className="btn" type="button" onClick={exportCsv}>Export CSV</button>
+          <div className="toolbar-actions">
+            <button className="btn" type="button" onClick={exportCsv}>Export CSV</button>
+            <button className="btn ghost" type="button" onClick={createPublicLink}>Create 24h Public Link</button>
+          </div>
         </div>
+
+        {publicUrl ? (
+          <div className="public-link-card">
+            <p className="sub">
+              Public progress URL
+              {publicUrlExpiresAt ? ` (valid until ${new Date(publicUrlExpiresAt).toLocaleString()})` : ''}
+            </p>
+            <div className="public-link-row">
+              <input value={publicUrl} readOnly />
+              <button type="button" className="btn ghost" onClick={copyPublicLink}>Copy</button>
+            </div>
+          </div>
+        ) : null}
 
         <table>
           <thead>

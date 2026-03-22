@@ -1,5 +1,7 @@
 import express from 'express'
 import { Parser } from 'json2csv'
+import jwt from 'jsonwebtoken'
+import { env } from '../config/env.js'
 import { requireAuth, requireTeacher } from '../middleware/auth.js'
 import { Student } from '../models/Student.js'
 import { Submission } from '../models/Submission.js'
@@ -13,13 +15,92 @@ function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+function buildAnalyticsPayload(rows, submissions) {
+  const top5 = [...rows].sort(compareLeaderboardRows).slice(0, 5)
+  const inactiveCount = rows.filter((row) => row.status === 'Inactive').length
+
+  const topicCoverage = new Map()
+  const languageCounts = new Map()
+  const difficultyCounts = new Map()
+
+  for (const s of submissions) {
+    for (const topic of s.topic || []) {
+      if (!topicCoverage.has(topic)) {
+        topicCoverage.set(topic, new Set())
+      }
+      topicCoverage.get(topic).add(s.enrollmentNo)
+    }
+
+    const language = (s.language || 'unknown').toLowerCase()
+    languageCounts.set(language, (languageCounts.get(language) || 0) + 1)
+
+    const difficulty = (s.difficulty || 'unknown').toLowerCase()
+    difficultyCounts.set(difficulty, (difficultyCounts.get(difficulty) || 0) + 1)
+  }
+
+  const totalStudents = rows.length || 1
+  const totalSubmissions = submissions.length || 1
+
+  const topicStats = [...topicCoverage.entries()].map(([topic, set]) => ({
+    topic,
+    studentCount: set.size,
+    percentage: Math.round((set.size / totalStudents) * 100),
+  }))
+
+  const languageStats = [...languageCounts.entries()]
+    .map(([language, count]) => ({
+      language,
+      count,
+      percentage: Math.round((count / totalSubmissions) * 100),
+    }))
+    .sort((a, b) => b.count - a.count)
+
+  const difficultyStats = [...difficultyCounts.entries()]
+    .map(([difficulty, count]) => ({
+      difficulty,
+      count,
+      percentage: Math.round((count / totalSubmissions) * 100),
+    }))
+    .sort((a, b) => b.count - a.count)
+
+  return {
+    summary: {
+      studentsRegistered: rows.length,
+      totalSubmissions: submissions.length,
+      activeThisWeek: rows.filter((row) => row.status === 'Active').length,
+      inactive7Days: inactiveCount,
+    },
+    leaderboardRules: LEADERBOARD_RULES,
+    top5,
+    topicStats,
+    languageStats,
+    difficultyStats,
+  }
+}
+
 async function getStudentRows() {
-  const [students, streaks] = await Promise.all([
+  const [students, streaks, latestQuestions] = await Promise.all([
     Student.find({}).select('-passwordHash').lean(),
     Streak.find({}).lean(),
+    Submission.aggregate([
+      { $sort: { submittedAt: -1 } },
+      {
+        $group: {
+          _id: '$enrollmentNo',
+          questionTitles: { $push: '$questionTitle' },
+        },
+      },
+      {
+        $project: {
+          _id: 1,
+          last5QuestionTitles: { $slice: ['$questionTitles', 5] },
+        },
+      },
+    ]),
   ])
 
   const streakMap = new Map(streaks.map((s) => [s.enrollmentNo, s]))
+  const latestQuestionMap = new Map(latestQuestions.map((row) => [row._id, row.last5QuestionTitles]))
 
   return students.map((student) => {
     const streak = streakMap.get(student.enrollmentNo)
@@ -34,6 +115,7 @@ async function getStudentRows() {
       totalSolved,
       streak: currentStreak,
       status: inactive ? 'Inactive' : 'Active',
+      last5QuestionTitles: (latestQuestionMap.get(student.enrollmentNo) || []).join(' | '),
       lastSubmissionDate: last,
       lastActiveAt: student.lastActiveAt,
     }
@@ -117,37 +199,59 @@ router.get('/analytics', requireAuth, requireTeacher, async (req, res, next) => 
   try {
     const rows = await getStudentRows()
     const submissions = await Submission.find({}).lean()
+    return res.json(buildAnalyticsPayload(rows, submissions))
+  } catch (error) {
+    return next(error)
+  }
+})
 
-    const top5 = [...rows].sort(compareLeaderboardRows).slice(0, 5)
-    const inactiveCount = rows.filter((row) => row.status === 'Inactive').length
+router.post('/public-link', requireAuth, requireTeacher, async (req, res, next) => {
+  try {
+    const sharedBy = req.user?.email || req.user?.enrollmentNo || 'teacher'
+    const token = jwt.sign(
+      { type: 'public-analytics', sharedBy },
+      env.jwtSecret,
+      { expiresIn: '24h' }
+    )
 
-    const topicCoverage = new Map()
-    for (const s of submissions) {
-      for (const topic of s.topic || []) {
-        if (!topicCoverage.has(topic)) {
-          topicCoverage.set(topic, new Set())
-        }
-        topicCoverage.get(topic).add(s.enrollmentNo)
-      }
+    const decoded = jwt.decode(token)
+    const expiresAt = decoded?.exp ? new Date(decoded.exp * 1000).toISOString() : null
+    const frontendBase = String(env.frontendOrigin || '').replace(/\/$/, '')
+    const publicUrl = `${frontendBase}/public/progress/${token}`
+
+    return res.json({ publicUrl, expiresAt })
+  } catch (error) {
+    return next(error)
+  }
+})
+
+router.get('/public/analytics/:token', async (req, res, next) => {
+  try {
+    const token = String(req.params.token || '')
+    if (!token) {
+      return res.status(400).json({ message: 'Missing public token' })
     }
 
-    const totalStudents = rows.length || 1
-    const topicStats = [...topicCoverage.entries()].map(([topic, set]) => ({
-      topic,
-      studentCount: set.size,
-      percentage: Math.round((set.size / totalStudents) * 100),
-    }))
+    let payload
+    try {
+      payload = jwt.verify(token, env.jwtSecret)
+    } catch {
+      return res.status(401).json({ message: 'Public link is invalid or expired' })
+    }
+
+    if (payload?.type !== 'public-analytics') {
+      return res.status(403).json({ message: 'Invalid public analytics token' })
+    }
+
+    const rows = await getStudentRows()
+    const submissions = await Submission.find({}).lean()
+    const analytics = buildAnalyticsPayload(rows, submissions)
+    const expiresAt = payload?.exp ? new Date(payload.exp * 1000).toISOString() : null
 
     return res.json({
-      summary: {
-        studentsRegistered: rows.length,
-        totalSubmissions: submissions.length,
-        activeThisWeek: rows.filter((row) => row.status === 'Active').length,
-        inactive7Days: inactiveCount,
-      },
-      leaderboardRules: LEADERBOARD_RULES,
-      top5,
-      topicStats,
+      sharedBy: payload.sharedBy || null,
+      expiresAt,
+      analytics,
     })
   } catch (error) {
     return next(error)
@@ -158,7 +262,7 @@ router.get('/export/csv', requireAuth, requireTeacher, async (req, res, next) =>
   try {
     const rows = await getStudentRows()
     const parser = new Parser({
-      fields: ['name', 'enrollmentNo', 'totalSolved', 'streak', 'status', 'lastSubmissionDate'],
+      fields: ['name', 'enrollmentNo', 'totalSolved', 'streak', 'status', 'last5QuestionTitles', 'lastSubmissionDate'],
     })
     const csv = parser.parse(rows)
 

@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { apiRequest } from '../api/client'
 import { useAuth } from '../auth/auth'
 import { useFeedback } from '../ui/feedback'
+import { downloadSubmissionCode } from '../utils/codeDownload'
 
 type StudentSubmission = {
   _id: string
@@ -171,6 +172,15 @@ export function TeacherStudentProfilePage() {
               <span>{submission.language}</span>
               <span>{submission.difficulty}</span>
               <span>{new Date(submission.submittedAt).toLocaleDateString()}</span>
+              <div className="submission-actions">
+                <button
+                  type="button"
+                  className="btn ghost submission-action"
+                  onClick={() => downloadSubmissionCode(submission.questionTitle, submission.language, submission.code)}
+                >
+                  Download
+                </button>
+              </div>
               <details>
                 <summary>View code</summary>
                 <pre>{submission.code}</pre>

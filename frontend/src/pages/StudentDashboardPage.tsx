@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { ChangeEvent, FormEvent } from 'react'
 import { apiRequest } from '../api/client'
 import { useAuth } from '../auth/auth'
 import { useFeedback } from '../ui/feedback'
+import { downloadSubmissionCode } from '../utils/codeDownload'
 
 const LANGUAGES = ['python', 'c', 'cpp', 'java', 'javascript'] as const
 const DIFFICULTY = ['easy', 'medium', 'hard'] as const
-const TOPICS = ['Arrays', 'Strings', 'Linked List', 'Trees', 'DP', 'Graphs', 'Sorting', 'Stacks', 'Design'] as const
+const TOPICS = ['NA', 'Arrays', 'Strings', 'Linked List', 'Trees', 'DP', 'Graphs', 'Sorting', 'Stacks', 'Design'] as const
 
 type Streak = {
   totalSolved: number
@@ -21,6 +23,14 @@ type Submission = {
   difficulty: string
   code: string
   submittedAt: string
+}
+
+type CreateDraft = {
+  questionTitle: string
+  language: string
+  topic: string[]
+  difficulty: string
+  code: string
 }
 
 type EditDraft = {
@@ -70,6 +80,15 @@ export function StudentDashboardPage() {
   const [error, setError] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null)
+  const [createDraft, setCreateDraft] = useState<CreateDraft>({
+    questionTitle: '',
+    language: 'python',
+    topic: ['NA'],
+    difficulty: 'easy',
+    code: '',
+  })
+  const [createSubmitting, setCreateSubmitting] = useState(false)
+  const [uploadedFileName, setUploadedFileName] = useState('')
 
   useEffect(() => {
     if (!token) {
@@ -133,6 +152,127 @@ export function StudentDashboardPage() {
     }
     return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)
   }, [submissions])
+
+  const canCreateSubmit = useMemo(() => {
+    return Boolean(
+      createDraft.questionTitle.trim()
+      && createDraft.code.trim()
+      && createDraft.topic.length > 0
+      && token
+    )
+  }, [createDraft.code, createDraft.questionTitle, createDraft.topic.length, token])
+
+  function toggleCreateTopic(topic: string) {
+    setCreateDraft((current) => {
+      if (topic === 'NA') {
+        return { ...current, topic: ['NA'] }
+      }
+
+      const withoutNa = current.topic.filter((value) => value !== 'NA')
+      const next = withoutNa.includes(topic)
+        ? withoutNa.filter((value) => value !== topic)
+        : [...withoutNa, topic]
+
+      return { ...current, topic: next.length > 0 ? next : ['NA'] }
+    })
+  }
+
+  function inferLanguageFromFileName(fileName: string) {
+    const lower = fileName.toLowerCase()
+    if (lower.endsWith('.py')) return 'python'
+    if (lower.endsWith('.c')) return 'c'
+    if (lower.endsWith('.cpp') || lower.endsWith('.cc') || lower.endsWith('.cxx')) return 'cpp'
+    if (lower.endsWith('.java')) return 'java'
+    if (lower.endsWith('.js') || lower.endsWith('.mjs') || lower.endsWith('.cjs')) return 'javascript'
+    return null
+  }
+
+  async function handleCodeFileSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) {
+      return
+    }
+
+    try {
+      const fileContent = await file.text()
+      const inferred = inferLanguageFromFileName(file.name)
+      const baseTitle = file.name.replace(/\.[^/.]+$/, '')
+
+      setCreateDraft((current) => ({
+        ...current,
+        code: fileContent,
+        questionTitle: current.questionTitle.trim() ? current.questionTitle : baseTitle,
+        language: inferred || current.language,
+      }))
+      setUploadedFileName(file.name)
+      showAlert('Code file loaded. You can edit before submitting.', 'info')
+    } catch {
+      showAlert('Unable to read selected file', 'error')
+    } finally {
+      event.target.value = ''
+    }
+  }
+
+  async function submitNewSubmission(event: FormEvent) {
+    event.preventDefault()
+
+    if (!token) {
+      showAlert('Please login to submit code', 'warning')
+      return
+    }
+
+    const enrollmentNo = user?.enrollmentNo || data?.profile.enrollmentNo
+    if (!enrollmentNo) {
+      showAlert('Enrollment number not found for your account', 'error')
+      return
+    }
+
+    if (!createDraft.questionTitle.trim() || !createDraft.code.trim() || createDraft.topic.length === 0) {
+      showAlert('Question title, code, and at least one topic are required', 'warning')
+      return
+    }
+
+    setCreateSubmitting(true)
+    try {
+      await withLoader(async () => {
+        await apiRequest('/submissions', {
+          method: 'POST',
+          token,
+          body: {
+            enrollmentNo,
+            questionTitle: createDraft.questionTitle,
+            language: createDraft.language,
+            topic: createDraft.topic,
+            difficulty: createDraft.difficulty,
+            code: createDraft.code,
+          },
+        })
+
+        const [profilePayload, submissionsPayload] = await Promise.all([
+          apiRequest<ProfileResponse>('/students/me', { token }),
+          apiRequest<SubmissionsListResponse>(`/submissions/${enrollmentNo}?page=1&limit=${PAGE_SIZE}`, { token }),
+        ])
+
+        setData(profilePayload)
+        setSubmissions(submissionsPayload.submissions)
+        setSubmissionsTotalPages(submissionsPayload.pagination.totalPages)
+        setSubmissionsTotalItems(submissionsPayload.pagination.totalItems)
+        setSubmissionsPage(1)
+      })
+
+      setCreateDraft((current) => ({
+        ...current,
+        questionTitle: '',
+        code: '',
+      }))
+      setUploadedFileName('')
+      showAlert('Submission saved successfully', 'success')
+    } catch (submitError) {
+      showAlert(submitError instanceof Error ? submitError.message : 'Failed to submit solution', 'error')
+    } finally {
+      setCreateSubmitting(false)
+    }
+  }
 
   function startEdit(submission: Submission) {
     setEditingId(submission._id)
@@ -210,7 +350,98 @@ export function StudentDashboardPage() {
         <article className="panel kpi"><strong>{streak.totalSolved}</strong><span>total solved</span></article>
         <article className="panel kpi"><strong>{streak.currentStreak}</strong><span>current streak</span></article>
         <article className="panel kpi"><strong>{streak.longestStreak}</strong><span>best streak</span></article>
-        <article className="panel kpi"><strong>{user?.role === 'student' ? rankLabel : '-'}</strong><span>class rank</span></article>
+        <article className="panel kpi"><strong>{user?.role === 'student' ? rankLabel : '-'}</strong><span>rank</span></article>
+      </section>
+
+      <section className="panel">
+        <h2>Submit new solution</h2>
+        <p className="sub">Upload an existing code file or paste code manually, just like on the home page.</p>
+
+        <form onSubmit={submitNewSubmission} className="submit-form">
+          <div className="input-row">
+            <label>
+              Question title / number
+              <input
+                value={createDraft.questionTitle}
+                onChange={(event) => setCreateDraft((current) => ({ ...current, questionTitle: event.target.value }))}
+                placeholder="e.g. Two Sum (LC 1)"
+                required
+              />
+            </label>
+            <label>
+              Upload existing code file (optional)
+              <input
+                type="file"
+                accept=".py,.c,.cpp,.cc,.cxx,.java,.js,.mjs,.cjs,.txt"
+                onChange={handleCodeFileSelected}
+              />
+              {uploadedFileName ? <span className="sub">Loaded: {uploadedFileName}</span> : null}
+            </label>
+          </div>
+
+          <div>
+            <p className="label">Language</p>
+            <div className="chip-row">
+              {LANGUAGES.map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  className={`chip ${createDraft.language === item ? 'selected' : ''}`}
+                  onClick={() => setCreateDraft((current) => ({ ...current, language: item }))}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <p className="label">Topic (multi-select)</p>
+            <div className="chip-row">
+              {TOPICS.map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  className={`chip ${createDraft.topic.includes(item) ? 'selected' : ''}`}
+                  onClick={() => toggleCreateTopic(item)}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <p className="label">Difficulty</p>
+            <div className="chip-row">
+              {DIFFICULTY.map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  className={`chip difficulty ${createDraft.difficulty === item ? `is-${item}` : ''}`}
+                  onClick={() => setCreateDraft((current) => ({ ...current, difficulty: item }))}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <label>
+            Paste your code
+            <textarea
+              rows={11}
+              value={createDraft.code}
+              onChange={(event) => setCreateDraft((current) => ({ ...current, code: event.target.value }))}
+              placeholder="# Paste your solution here..."
+              required
+            />
+          </label>
+
+          <button type="submit" className="btn" disabled={!canCreateSubmit || createSubmitting}>
+            {createSubmitting ? 'Submitting...' : 'Submit solution'}
+          </button>
+        </form>
       </section>
 
       <section className="panel">
@@ -250,9 +481,18 @@ export function StudentDashboardPage() {
               <span>{row.language}</span>
               <span>{row.difficulty}</span>
               <span>{new Date(row.submittedAt).toLocaleDateString()}</span>
-              <button type="button" className="btn ghost submission-action" onClick={() => startEdit(row)}>
-                Edit
-              </button>
+              <div className="submission-actions">
+                <button type="button" className="btn ghost submission-action" onClick={() => startEdit(row)}>
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  className="btn ghost submission-action"
+                  onClick={() => downloadSubmissionCode(row.questionTitle, row.language, row.code)}
+                >
+                  Download
+                </button>
+              </div>
 
               {editingId === row._id && editDraft ? (
                 <div className="edit-card">
