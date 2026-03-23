@@ -10,6 +10,7 @@ import { PublicProgressPage } from './pages/PublicProgressPage'
 import { StudentDashboardPage } from './pages/StudentDashboardPage'
 import { TeacherDashboardPage } from './pages/TeacherDashboardPage'
 import { TeacherStudentProfilePage } from './pages/TeacherStudentProfilePage'
+import Copyright  from './copyright/Copyright'
 
 function App() {
   const { user } = useAuth()
@@ -51,6 +52,7 @@ function App() {
           element={<Navigate to={user?.role === 'teacher' ? '/teacher' : '/'} replace />}
         />
       </Routes>
+      <Copyright />
     </div>
   )
 }

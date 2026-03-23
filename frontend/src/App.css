@@ -33,7 +33,9 @@
 }
 
 .layout-grid {
-  display: grid;
+  display: flex;
+  justify-content: center;
+  align-items: center;
   grid-template-columns: 1.7fr 1fr;
   gap: 14px;
 }
