@@ -13,6 +13,7 @@ type TeacherLoginResponse = {
   token: string
 }
 
+
 export function LoginPage() {
   const [mode, setMode] = useState<'student' | 'teacher'>('student')
   const [enrollmentNo, setEnrollmentNo] = useState('')
